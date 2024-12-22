@@ -1,5 +1,4 @@
 import requests
-import schedule
 import time
 
 # 将"你的token"替换成你的实际token
@@ -30,11 +29,5 @@ def sign_request():
     else:
         print('获取金币失败')
 
-# 设置定时任务，每天10:00执行sign_request函数
-# 你可以根据需要将"10:00"改成其他时间
-#schedule.every().day.at("10:00").do(sign_request)
-
-# 开始一个无限循环，以执行定时任务
-#while True:
-#   schedule.run_pending()
-#  time.sleep(60)
+# 执行一次签到和获取金币的操作
+sign_request()
