@@ -3,9 +3,7 @@
 # 功能描述: [签到 基础任务 果园 云朵大作战]
 # 使用说明:
 #   - [抓包 Cookie：任意Authorization]
-#   - [注意事项: 简易方法，开抓包进App，搜refresh，找到
-            authTokenRefresh.do
-           ，请求头中的Authorization，响应体 xxx 中xxx值（新版加密抓这个）]
+#   - [注意事项: 简易方法，开抓包进App，搜refresh，找到authTokenRefresh.do，请求头中的Authorization，响应体 xxx 中xxx值（新版加密抓这个）]
 # 环境变量设置:
 #   - 名称：[ydypCK]   格式：[Authorization值#手机号#token值]
 #   - 多账号处理方式：[换行或者@分割]
