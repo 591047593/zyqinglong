@@ -17,9 +17,7 @@ from os import path
 
 import requests
 
-ua = 'Mozilla/5.0 (Linux; Android 11; M2012K10C Build/
-            RP1A.200720.011;
-           wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/90.0.4430.210 Mobile Safari/537.36 MCloudApp/10.0.1'
+ua = 'Mozilla/5.0 (Linux; Android 11; M2012K10C Build/RP1A.200720.011;wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/90.0.4430.210 Mobile Safari/537.36 MCloudApp/10.0.1'
 
 err_accounts = ''  # 异常账号
 err_message = ''  # 错误信息
