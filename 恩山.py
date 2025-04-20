@@ -22,7 +22,7 @@ class EnShan:
         }
         
         response = requests.get(
-            url="https://www.right.com.cn/FORUM/home.php?mod=spacecp&ac=credit&showcredit=1",
+            url="https://www.right.com.cn/forum/home.php?mod=spacecp&ac=credit&showcredit=1",
             headers=headers,
             verify=True,  # 建议验证SSL证书
         )
