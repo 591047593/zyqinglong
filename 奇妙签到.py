@@ -1,33 +1,113 @@
+# -*- coding: utf-8 -*-
+"""
+奇妙应用签到（多账号）
+export qm_token="XXX#UID"
+cron: 0 9 * * *
+const $ = new Env("奇妙应用");
+"""
+import os
 import requests
-import time
+from datetime import datetime
 
-# 将"你的token"替换成你的实际token
-YourToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5NDI0ODc4IiwiZXhwIjo0ODg3MTU5NTY4fQ.03DKVmU4hIhzYlsyVsoYBigbtEA2wxwhVaHngXwVbJ4'
-# 将"你的id"替换成你的实际用户ID
-user_id = "9424878"
+# ---------- 优先调用青龙 sendNotify.py ----------
+try:
+    from sendNotify import send
+except ImportError:
+    send = None
 
-# 正确的签到API URL
-sign_url = "http://www.magicalapp.cn/user/api/signDays"
-# 设置请求头，包含Token用于身份验证
-headers = {'token': YourToken}
+def send_notify(title, content):
+    if send:
+        send(title, content)
+        return
+    # 兜底自写推送
+    html = content.replace("\n", "<br>")
+    token = os.getenv("PUSHPLUS_TOKEN")
+    if token:
+        url = "https://www.pushplus.plus/send"
+        body = {"token": token, "title": title, "content": html, "template": "html"}
+        try:
+            r = requests.post(url, json=body, timeout=10)
+            print("✅ PUSHPLUS 推送完成" if r.json().get("code") == 200 else "❌ PUSHPLUS 推送失败")
+        except Exception as e:
+            print("❌ PUSHPLUS 异常:", e)
+        return
+    bark = os.getenv("BARK_KEY")
+    if bark:
+        url = f"https://api.day.app/{bark}/{title}/{content}"
+        try:
+            r = requests.get(url, timeout=10)
+            print("✅ Bark 推送完成" if r.status_code == 200 else "❌ Bark 推送失败")
+        except Exception as e:
+            print("❌ Bark 异常:", e)
+        return
+    print("⚠️ 未配置任何令牌，跳过通知")
 
-# 正确的获取金币API URL，并包含用户ID
-burst_url = f"https://www.magicalapp.cn/api/game/api/getCoinP?userId={user_id}"
+# ---------- 新通知风格模板 ----------
+def fmt_single(user, coin, status):
+    return f"""🌟 奇妙应用签到结果
+👤 用户: {user}
+💰 当前金币: {coin}
+📝 签到: {status}
+⏰ 时间: {datetime.now().strftime('%m-%d %H:%M')}"""
 
-def sign_request():
-    # 发送GET请求到签到URL
-    sign_response = requests.get(sign_url, headers=headers)
-    if sign_response.status_code == 200:
-        print('签到成功')
-    else:
-        print('签到失败')
-    
-    # 发送GET请求到获取金币的URL
-    burst_response = requests.get(burst_url)
-    if burst_response.status_code == 200:
-        print('获取金币成功')
-    else:
-        print('获取金币失败')
+def fmt_summary(total, ok, all_coin):
+    return f"""📊 奇妙应用签到汇总
+📈 总计: {total} 账号
+✅ 成功: {ok} 账号
+💰 总金币: {all_coin}
+📊 成功率: {ok / total * 100:.1f}%
+⏰ 完成: {datetime.now().strftime('%m-%d %H:%M')}"""
 
-# 执行一次签到和获取金币的操作
-sign_request()
+# ---------- 业务逻辑（零改动） ----------
+def sign_once(token, user_id):
+    sign_url = "http://www.magicalapp.cn/user/api/signDays"
+    coin_url = f"https://www.magicalapp.cn/api/game/api/getCoinP?userId={user_id}"
+    headers = {"token": token}
+
+    r1 = requests.get(sign_url, headers=headers, timeout=10)
+    sign_ok = r1.status_code == 200
+
+    r2 = requests.get(coin_url, timeout=10)
+    coin = 0
+    if r2.status_code == 200:
+        coin = r2.json().get("data", 0)
+
+    return sign_ok, coin
+
+
+def main():
+    tokens = (os.getenv("qm_token") or "").split("@")
+    if not tokens:
+        print("⚠️ 未配置环境变量 qm_token")
+        return
+
+    total = len(tokens)
+    ok = 0
+    all_coin = 0
+
+    for idx, item in enumerate(tokens, 1):
+        if "#" not in item:
+            print(f"第{idx}个账号格式错误，跳过")
+            continue
+        token, user_id = item.split("#", 1)
+        user = f"uid{user_id[-4:]}"
+
+        print(f"======== 第 {idx}/{total} 账号：{user} ========")
+        try:
+            sign_ok, coin = sign_once(token, user_id)
+            status = "签到成功" if sign_ok else "签到失败"
+            print(status)
+            if sign_ok:
+                ok += 1
+            all_coin += coin
+            send_notify("奇妙应用签到", fmt_single(user, coin, status))
+        except Exception as e:
+            print("运行异常：", e)
+            send_notify("奇妙应用签到失败", fmt_single(user, 0, "脚本异常"))
+
+    if total:
+        send_notify("奇妙应用签到汇总", fmt_summary(total, ok, all_coin))
+
+
+if __name__ == "__main__":
+    main()
