@@ -16,18 +16,25 @@ try:
     send = sendNotify.send
 except Exception as e:
     print("sendNotify 加载失败，使用兜底推送:", e)
-    # 兜底推送
-    html = content.replace("\n", "<br>")
+
+
+# ---------- 兜底推送 ----------
+def send_notify(title, content):
+    if send:
+        send(title, content)
+        return
+    # PushPlus
     token = os.getenv("PUSH_PLUS_TOKEN")
     if token:
         url = "https://www.pushplus.plus/send"
-        body = {"token": token, "title": title, "content": html, "template": "html"}
+        body = {"token": token, "title": title, "content": content.replace("\n", "<br>"), "template": "html"}
         try:
             r = requests.post(url, json=body, timeout=10)
             print("✅ PushPlus 完成" if r.json().get("code") == 200 else "❌ PushPlus 失败")
         except Exception as e:
             print("❌ PushPlus 异常:", e)
         return
+    # Bark
     bark = os.getenv("BARK_KEY")
     if bark:
         url = f"https://api.day.app/{bark}/{title}/{content}"
