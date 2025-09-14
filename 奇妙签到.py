@@ -9,17 +9,13 @@ import os
 import requests
 from datetime import datetime
 
-# ---------- 青龙 sendNotify 优先 ----------
+# ---------- 安全导入 sendNotify ----------
+send = None
 try:
-    from sendNotify import send
-except ImportError:
-    send = None
-
-
-def send_notify(title, content):
-    if send:
-        send(title, content)
-        return
+    import sendNotify
+    send = sendNotify.send
+except Exception as e:
+    print("sendNotify 加载失败，使用兜底推送:", e)
     # 兜底推送
     html = content.replace("\n", "<br>")
     token = os.getenv("PUSH_PLUS_TOKEN")
