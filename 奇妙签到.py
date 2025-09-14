@@ -1,48 +1,50 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-奇妙应用签到（多账号）
-export qm_token="XXX#UID"
+奇妙应用签到（多账号 | 整洁通知）
+export qm_token="token1#uid1@token2#uid2"
 cron: 0 9 * * *
-const $ = new Env("奇妙应用");
 """
 import os
 import requests
 from datetime import datetime
 
-# ---------- 优先调用青龙 sendNotify.py ----------
+# ---------- 青龙 sendNotify 优先 ----------
 try:
     from sendNotify import send
 except ImportError:
     send = None
 
+
 def send_notify(title, content):
     if send:
         send(title, content)
         return
-    # 兜底自写推送
+    # 兜底推送
     html = content.replace("\n", "<br>")
-    token = os.getenv("PUSHPLUS_TOKEN")
+    token = os.getenv("PUSH_PLUS_TOKEN")
     if token:
         url = "https://www.pushplus.plus/send"
         body = {"token": token, "title": title, "content": html, "template": "html"}
         try:
             r = requests.post(url, json=body, timeout=10)
-            print("✅ PUSHPLUS 推送完成" if r.json().get("code") == 200 else "❌ PUSHPLUS 推送失败")
+            print("✅ PushPlus 完成" if r.json().get("code") == 200 else "❌ PushPlus 失败")
         except Exception as e:
-            print("❌ PUSHPLUS 异常:", e)
+            print("❌ PushPlus 异常:", e)
         return
     bark = os.getenv("BARK_KEY")
     if bark:
         url = f"https://api.day.app/{bark}/{title}/{content}"
         try:
             r = requests.get(url, timeout=10)
-            print("✅ Bark 推送完成" if r.status_code == 200 else "❌ Bark 推送失败")
+            print("✅ Bark 完成" if r.status_code == 200 else "❌ Bark 失败")
         except Exception as e:
             print("❌ Bark 异常:", e)
         return
     print("⚠️ 未配置任何令牌，跳过通知")
 
-# ---------- 新通知风格模板 ----------
+
+# ---------- 整洁通知模板 ----------
 def fmt_single(user, coin, status):
     return f"""🌟 奇妙应用签到结果
 👤 用户: {user}
@@ -51,6 +53,8 @@ def fmt_single(user, coin, status):
 ⏰ 时间: {datetime.now().strftime('%m-%d %H:%M')}"""
 
 def fmt_summary(total, ok, all_coin):
+    if total == 0:
+        return "📊 奇妙应用签到汇总\n📈 总计: 0 账号"
     return f"""📊 奇妙应用签到汇总
 📈 总计: {total} 账号
 ✅ 成功: {ok} 账号
@@ -58,7 +62,8 @@ def fmt_summary(total, ok, all_coin):
 📊 成功率: {ok / total * 100:.1f}%
 ⏰ 完成: {datetime.now().strftime('%m-%d %H:%M')}"""
 
-# ---------- 业务逻辑（零改动） ----------
+
+# ---------- 业务 ----------
 def sign_once(token, user_id):
     sign_url = "http://www.magicalapp.cn/user/api/signDays"
     coin_url = f"https://www.magicalapp.cn/api/game/api/getCoinP?userId={user_id}"
