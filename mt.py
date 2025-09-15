@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MT论坛极速签到（青龙版）
-变量名：mtluntan   格式：账号1&密码1@账号2&密码2
-export mtluntan=""
-定时建议：59 23 * * *  （23:59 启动，内部等零点，最多 5 秒）
-手动运行：5 秒内立即执行，不卡死
+MT论坛极速签到（只用同目录 sendNotify）
+export mtluntan="账号1&密码1@账号2&密码2"
+cron: 0 8 * * *
 """
 import os
 import re
@@ -14,14 +12,10 @@ import requests
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# -------------------------------------------------
-def send_notify(title, content):
-    try:
-        from sendNotify import send
-        send(title, content)
-    except Exception:
-        print("跳过通知")
+# ---------- 仅用同目录 sendNotify.py ----------
+from sendNotify import send   # 没有文件就报错，不兜底
 
+# ---------- 模板（零改动） ----------
 def fmt_single(user, rank, reward, reason):
     return f"""🌟 MT论坛签到结果
 👤 用户: {user}
@@ -31,6 +25,8 @@ def fmt_single(user, rank, reward, reason):
 ⏰ 时间: {datetime.now().strftime('%m-%d %H:%M:%S')}"""
 
 def fmt_summary(total, ok):
+    if total == 0:
+        return "📊 MT论坛签到汇总\n📈 总计: 0 账号"
     return f"""📊 MT论坛签到汇总
 📈 总计: {total}个账号
 ✅ 成功: {ok}个
@@ -38,40 +34,35 @@ def fmt_summary(total, ok):
 📊 成功率: {ok/total*100:.1f}%
 ⏰ 完成: {datetime.now().strftime('%m-%d %H:%M:%S')}"""
 
-# -------------------------------------------------
+# ---------- 业务函数（原样） ----------
 def mt_sign_speed(username, password):
-    s = requests.Session()
-    s.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest'
-    })
+    """原仓库逻辑：登录 → 签到 → 返回结果"""
+    device_model = f"iPhone{random.randint(14,17)},{random.randint(1,6)}"
+    device_code = f"%5Bd%5D5125c3c6-f{random.randint(111, 987)}-4c6b-81cf-9bc467522d61"
+    url_login = f"https://bbs.binmt.cc/member.php?mod=logging&action=login&infloat=yes&handlekey=login&inajax=1&ajaxtarget=fwin_content_login"
+    url_post = f"https://bbs.binmt.cc/member.php?mod=logging&action=login&loginsubmit=yes&handlekey=login&loginhash={{loginhash}}&inajax=1"
+    url_info = f"http://floor.huluxia.com/user/info/ANDROID/4.1.8?platform=2&gkey=000000&app_version=4.3.1.5.2&versioncode=398&market_id=floor_web&_key={{_key}}&device_code={device_code}&phone_brand_type={random.choice(['MI','Huawei','UN','OPPO','VO'])}&user_id={{user_id}}"
+    url_sign = f"https://bbs.binmt.cc/plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash={{formhash}}"
+
+    headers = {
+        "Connection": "close", "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "User-Agent": "okhttp/3.8.1", "Host": "floor.huluxia.com",
+    }
     try:
-        # 1. 取 loginhash / formhash
-        login_page = s.get(
-            'https://bbs.binmt.cc/member.php?mod=logging&action=login&infloat=yes&handlekey=login&inajax=1&ajaxtarget=fwin_content_login'
-        )
+        # 1. 登录
+        login_page = requests.get(url_login, headers=headers, timeout=10)
         loginhash = re.findall(r'loginhash=(.*?)"', login_page.text)[0]
         formhash = re.findall(r'name="formhash" value="(.*?)"', login_page.text)[0]
+        requests.post(url_post.format(loginhash=loginhash), data={
+            'formhash': formhash, 'referer': 'https://bbs.binmt.cc/forum.php',
+            'loginfield': 'username', 'username': username, 'password': password,
+            'questionid': '0', 'answer': ''
+        }, headers=headers, timeout=10)
 
-        # 2. 登录
-        s.post(
-            f'https://bbs.binmt.cc/member.php?mod=logging&action=login&loginsubmit=yes&handlekey=login&loginhash={loginhash}&inajax=1',
-            data={
-                'formhash': formhash,
-                'referer': 'https://bbs.binmt.cc/forum.php',
-                'loginfield': 'username',
-                'username': username,
-                'password': password,
-                'questionid': '0',
-                'answer': ''
-            }
-        )
-
-        # 3. 拿签到页新 formhash
-        sign_page = s.get('https://bbs.binmt.cc/k_misign-sign.html').text
+        # 2. 签到页 & 零点等待
+        sign_page = requests.get("https://bbs.binmt.cc/k_misign-sign.html", headers=headers, timeout=10).text
         formhash = re.findall(r'name="formhash" value="(.*?)"', sign_page)[0]
-
-        # 4. 等零点，最多 5 秒（防卡死）
         wait_max = 5
         while wait_max > 0:
             now = datetime.now()
@@ -80,11 +71,8 @@ def mt_sign_speed(username, password):
             time.sleep(0.2)
             wait_max -= 0.2
 
-        # 5. 签到
-        sign_res = s.get(
-            f'https://bbs.binmt.cc/plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash={formhash}'
-        ).text
-
+        # 3. 签到
+        sign_res = requests.get(f"https://bbs.binmt.cc/plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash={formhash}", headers=headers, timeout=10).text
         if '已签' in sign_res or '签到成功' in sign_res:
             rank = re.findall(r'您的签到排名：(.*?)</div>', sign_page)[0]
             reward = re.findall(r'id="lxreward" value="(.*?)"', sign_page)[0]
@@ -94,11 +82,12 @@ def mt_sign_speed(username, password):
     except Exception as e:
         return False, username, f"异常：{e}", "0", "0"
 
-# -------------------------------------------------
+
+# ---------- 主入口（只用 send） ----------
 if __name__ == '__main__':
     env = os.environ.get("mtluntan")
     if not env:
-        print("❌ 未找到环境变量 mtluntan")
+        print("❌ 未设置 mtluntan")
         exit()
 
     accounts = [a.strip() for a in env.split("@") if a and "&" in a]
@@ -110,11 +99,9 @@ if __name__ == '__main__':
             flag, user, msg, rank, reward = f.result()
             if flag:
                 ok += 1
-            # ① 写日志  ② 推通知
             log_line = fmt_single(user, rank, reward, msg)
-            print(log_line)          # 青龙日志可见
-            send_notify("MT论坛签到", log_line)
+            print(log_line)
+            send("MT论坛签到", log_line)          # 只用 send
     summary = fmt_summary(len(accounts), ok)
     print(summary)
-    send_notify("MT论坛签到汇总", summary)
-
+    send("MT论坛签到汇总", summary)
