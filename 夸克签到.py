@@ -1,202 +1,266 @@
-"""
-cron "13 18 * * *" script-path=xxx.py,tag=匹配cron用
-new Env('夸克签到')
-"""
-import os
-import re
-import sys
-import time
-import random
-import requests
-from datetime import datetime, timedelta
-
-# ---------------- 统一通知模块加载（和NodeSeek一样）----------------
-hadsend = False
-send = None
+import os 
+import re 
+import sys 
+import requests 
+import json
+#修改自作者Liu8Can夸克签到代码,感谢
+# 尝试导入同文件夹中的sendNotify.py
 try:
-    from notify import send
-    hadsend = True
-    print("✅ 已加载notify.py通知模块")
+    import sendNotify
+    has_send_notify = True
 except ImportError:
-    print("⚠️  未加载通知模块，跳过通知功能")
+    print("未找到sendNotify.py，将使用默认打印通知")
+    has_send_notify = False
 
-# 随机延迟配置
-max_random_delay = int(os.getenv("MAX_RANDOM_DELAY", "3600"))
-random_signin = os.getenv("RANDOM_SIGNIN", "true").lower() == "true"
-
-#推送函数（修改为使用notify.py）
-def Push(contents):
-    """修改推送函数使用notify.py（保持原始调用方式）"""
-    if hadsend:
+# 调用sendNotify.py的通知功能
+def send(title, message):
+    if has_send_notify:
         try:
-            send('夸克签到', contents)
-            print('✅ notify.py推送成功')
+            # 调用sendNotify.py中的发送函数
+            sendNotify.send(title, message)
         except Exception as e:
-            print(f'❌ notify.py推送失败: {e}')
+            print(f"调用sendNotify失败: {str(e)}")
+            print(f"{title}: {message}")
     else:
-        print(f'📢 夸克签到')
-        print(f'📄 {contents}')
+        # 未找到sendNotify.py时使用打印
+        print(f"{title}\n{message}")
 
-def format_time_remaining(seconds):
-    """格式化时间显示"""
-    if seconds <= 0:
-        return "立即执行"
-    
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    
-    if hours > 0:
-        return f"{hours}小时{minutes}分{secs}秒"
-    elif minutes > 0:
-        return f"{minutes}分{secs}秒"
-    else:
-        return f"{secs}秒"
+# 获取环境变量 
+def get_env(): 
+    # 判断 QUARK_COOKIE是否存在于环境变量 
+    if "QUARK_COOKIE" in os.environ: 
+        # 读取系统变量以 \n 或 && 分割变量 
+        cookie_list = re.split('\n|&&', os.environ.get('QUARK_COOKIE')) 
+        # 过滤空字符串
+        cookie_list = [cookie for cookie in cookie_list if cookie.strip()]
+    else: 
+        # 标准日志输出 
+        print('❌ 未添加QUARK_COOKIE变量') 
+        send('夸克自动签到', '❌ 未添加QUARK_COOKIE变量') 
+        # 脚本退出 
+        sys.exit(0) 
 
-def wait_with_countdown(delay_seconds):
-    """带倒计时的等待"""
-    if delay_seconds <= 0:
-        return
-        
-    print(f"夸克签到需要等待 {format_time_remaining(delay_seconds)}")
-    
-    remaining = delay_seconds
-    while remaining > 0:
-        if remaining <= 10 or remaining % 10 == 0:
-            print(f"倒计时: {format_time_remaining(remaining)}")
-        
-        sleep_time = 1 if remaining <= 10 else min(10, remaining)
-        time.sleep(sleep_time)
-        remaining -= sleep_time
-
-# 获取环境变量
-def get_env():
-    # 判断 QUARK_COOKIE是否存在于环境变量
-    if "QUARK_COOKIE" in os.environ:
-        # 读取系统变量以 \n 或 && 分割变量
-        cookie_list = re.split('\n|&&',os.environ.get('QUARK_COOKIE') ) #os.environ.get('QUARK_COOKIE')
-    else:
-        # 标准日志输出
-        print('❌未添加QUARK_COOKIE变量')
-        # 脚本退出
-        sys.exit(0)
-
-    return cookie_list
+    return cookie_list 
 
 class Quark:
-    def __init__(self, cookie):
-        self.cookie = cookie
+    '''
+    Quark类封装了签到、领取签到奖励的方法
+    '''
+    def __init__(self, user_data, user_index):
+        '''
+        初始化方法
+        :param user_data: 用户信息，用于后续的请求
+        :param user_index: 用户索引，用于日志标识
+        '''
+        self.param = user_data
+        self.user_index = user_index
+        self.session = requests.Session()
+        # 设置请求头，模拟手机客户端
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://pan.quark.cn",
+            "Referer": "https://pan.quark.cn/"
+        }
+
+    def convert_bytes(self, b):
+        '''
+        将字节转换为 MB GB TB
+        :param b: 字节数
+        :return: 返回 MB GB TB
+        '''
+        try:
+            b = int(b)
+            units = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+            i = 0
+            while b >= 1024 and i < len(units) - 1:
+                b /= 1024
+                i += 1
+            return f"{b:.2f} {units[i]}"
+        except Exception as e:
+            print(f"字节转换失败: {str(e)}")
+            return f"{b} B"
 
     def get_growth_info(self):
-        url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/info"
-        querystring = {"pr": "ucpro", "fr": "pc", "uc_param_str": ""}
-        headers = {
-            "content-type": "application/json",
-            "cookie": self.cookie
-        }
-        response = requests.get(url=url, headers=headers, params=querystring).json()
-        if response.get("data"):
-            return response["data"]
-        else:
+        '''
+        获取用户当前的签到信息
+        :return: 返回一个字典，包含用户当前的签到信息
+        '''
+        try:
+            url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/info"
+            querystring = {
+                "pr": "ucpro",
+                "fr": "android",
+                "kps": self.param.get('kps'),
+                "sign": self.param.get('sign'),
+                "vcode": self.param.get('vcode')
+            }
+            response = self.session.get(
+                url=url, 
+                params=querystring,
+                headers=self.headers
+            ).json()
+            
+            if response.get("data"):
+                return response["data"]
+            else:
+                print(f"用户{self.user_index}获取成长信息失败: {response.get('message', '未知错误')}")
+                return False
+        except Exception as e:
+            print(f"用户{self.user_index}获取成长信息异常: {str(e)}")
             return False
 
     def get_growth_sign(self):
-        url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/sign"
-        querystring = {"pr": "ucpro", "fr": "pc", "uc_param_str": ""}
-        payload = {"sign_cyclic": True}
-        headers = {
-            "content-type": "application/json",
-            "cookie": self.cookie
-        }
-        response = requests.post(url=url, json=payload, headers=headers, params=querystring).json()
-        if response.get("data"):
-            return True, response["data"]["sign_daily_reward"]
-        else:
-            return False, response["message"]
+        '''
+        执行签到操作
+        :return: 返回签到结果和奖励信息
+        '''
+        try:
+            url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/sign"
+            querystring = {
+                "pr": "ucpro",
+                "fr": "android",
+                "kps": self.param.get('kps'),
+                "sign": self.param.get('sign'),
+                "vcode": self.param.get('vcode')
+            }
+            data = {"sign_cyclic": True}
+            response = self.session.post(
+                url=url, 
+                json=data, 
+                params=querystring,
+                headers=self.headers
+            ).json()
+            
+            if response.get("data"):
+                return True, response["data"]["sign_daily_reward"]
+            else:
+                return False, response.get("message", "未知错误")
+        except Exception as e:
+            return False, f"签到请求异常: {str(e)}"
 
-    def get_account_info(self):
-        url = "https://pan.quark.cn/account/info"
-        querystring = {"fr": "pc", "platform": "pc"}
-        headers = {
-            "content-type": "application/json",
-            "cookie": self.cookie
-        }
-        response = requests.get(url=url, headers=headers, params=querystring).json()
-        if response.get("data"):
-            return response["data"]
-        else:
-            return False
+    def queryBalance(self):
+        '''
+        查询抽奖余额
+        '''
+        try:
+            url = "https://coral2.quark.cn/currency/v1/queryBalance"
+            querystring = {
+                "moduleCode": "1f3563d38896438db994f118d4ff53cb",
+                "kps": self.param.get('kps'),
+            }
+            response = self.session.get(
+                url=url, 
+                params=querystring,
+                headers=self.headers
+            ).json()
+            
+            if response.get("data"):
+                return response["data"]["balance"]
+            else:
+                return f"查询失败: {response.get('msg', '未知错误')}"
+        except Exception as e:
+            return f"查询异常: {str(e)}"
 
     def do_sign(self):
-        msg = ""
-        # 验证账号
-        account_info = self.get_account_info()
-        if not account_info:
-            msg = f"\n❌该账号登录失败，cookie无效"
-        else:
-            log = f" 昵称: {account_info['nickname']}"
-            msg += log + "\n"
+        '''
+        执行签到任务
+        :return: 返回一个字符串，包含签到结果
+        '''
+        log = f"\n🙍🏻‍♂️ 第{self.user_index}个账号签到情况：\n"
+        try:
             # 每日领空间
             growth_info = self.get_growth_info()
             if growth_info:
-                if growth_info["cap_sign"]["sign_daily"]:
-                    log = f"✅ 执行签到: 今日已签到+{int(growth_info['cap_sign']['sign_daily_reward'] / 1024 / 1024)}MB，连签进度({growth_info['cap_sign']['sign_progress']}/{growth_info['cap_sign']['sign_target']})"
-                    msg += log + "\n"
+                # 账号类型和容量信息
+                user_type = "88VIP用户" if growth_info.get('88VIP') else "普通用户"
+                log += f"  账号类型：{user_type}\n"
+                
+                total_capacity = self.convert_bytes(growth_info.get('total_capacity', 0))
+                log += f"  💾 网盘总容量：{total_capacity}\n"
+                
+                # 签到累计容量
+                sign_reward = growth_info.get('cap_composition', {}).get('sign_reward', 0)
+                log += f"  累计签到容量：{self.convert_bytes(sign_reward)}\n"
+                
+                # 签到状态判断
+                cap_sign = growth_info.get('cap_sign', {})
+                if cap_sign.get("sign_daily"):
+                    daily_reward = self.convert_bytes(cap_sign.get('sign_daily_reward', 0))
+                    progress = f"{cap_sign.get('sign_progress', 0)}/{cap_sign.get('sign_target', 0)}"
+                    log += f"  ✅ 今日已签到，获得：{daily_reward}\n"
+                    log += f"  🔄 连签进度：{progress}\n"
                 else:
-                    sign, sign_return = self.get_growth_sign()
-                    if sign:
-                        log = f"✅ 执行签到: 今日签到+{int(sign_return / 1024 / 1024)}MB，连签进度({growth_info['cap_sign']['sign_progress'] + 1}/{growth_info['cap_sign']['sign_target']})"
-                        msg += log + "\n"
+                    # 执行签到
+                    sign_success, sign_result = self.get_growth_sign()
+                    if sign_success:
+                        daily_reward = self.convert_bytes(sign_result)
+                        progress = f"{cap_sign.get('sign_progress', 0) + 1}/{cap_sign.get('sign_target', 0)}"
+                        log += f"  ✅ 签到成功，获得：{daily_reward}\n"
+                        log += f"  🔄 连签进度：{progress}\n"
                     else:
-                        msg += f"✅ 执行签到: {sign_return}\n"
+                        log += f"  ❌ 签到失败：{sign_result}\n"
+                
+                # 查询余额（如果需要）
+                # balance = self.queryBalance()
+                # log += f"  💰 余额：{balance}\n"
+            else:
+                log += "  ❌ 无法获取签到信息，可能是Cookie失效\n"
+                
+        except Exception as e:
+            log += f"  ❌ 签到过程发生错误：{str(e)}\n"
+            
+        return log
 
-        return msg
 
 def main():
+    '''
+    主函数
+    :return: 返回一个字符串，包含签到结果
+    '''
     msg = ""
-    global QUARK_COOKIE
-    
-    QUARK_COOKIE = get_env()
+    try:
+        global cookie_quark
+        cookie_quark = get_env()
 
-    print("✅检测到共", len(QUARK_COOKIE), "个夸克账号\n")
+        print(f"✅ 检测到共 {len(cookie_quark)} 个夸克账号，开始执行签到\n")
+        msg += f"检测到共 {len(cookie_quark)} 个夸克账号，签到结果如下：\n"
 
-    i = 0
-    while i < len(QUARK_COOKIE):
-        # 开始任务
-        log = f"🙍🏻‍♂️ 第{i + 1}个账号"
-        msg += log
-        # 登录
-        log = Quark(QUARK_COOKIE[i]).do_sign()
-        msg += log + "\n"
+        for i in range(len(cookie_quark)):
+            try:
+                # 获取user_data参数
+                user_data = {}  # 用户信息
+                cookie_str = cookie_quark[i].strip()
+                # 解析cookie
+                for item in cookie_str.replace(" ", "").split(';'):
+                    if '=' in item:
+                        key, value = item.split('=', 1)
+                        user_data[key] = value
+                
+                # 执行签到
+                quark = Quark(user_data, i + 1)
+                log = quark.do_sign()
+                msg += log
+                print(log)
+                
+            except Exception as err:
+                error_msg = f"第{i + 1}个账号处理出错：{str(err)}\n"
+                msg += error_msg
+                print(error_msg)
+                continue  # 继续处理下一个账号
+
+        # 发送通知
+        send('夸克自动签到', msg)
         
-        # 多账号间随机等待
-        if i < len(QUARK_COOKIE) - 1:  # 不是最后一个账号
-            delay = random.uniform(3, 8)
-            print(f"随机等待 {delay:.1f} 秒后处理下一个账号...")
-            time.sleep(delay)
+    except Exception as err:
+        error_msg = f"脚本执行出错：{str(err)}"
+        print(error_msg)
+        send('夸克自动签到', error_msg)
 
-        i += 1
+    return msg
 
-    print(msg)
-    
-    # 统一推送（只推送一次，包含所有账号结果）
-    Push(contents=msg[:-1])
-
-    return msg[:-1]
 
 if __name__ == "__main__":
-    print(f"==== 夸克网盘签到开始 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====")
-    
-    # 随机延迟（可选）
-    if random_signin:
-        delay_seconds = random.randint(0, max_random_delay)
-        if delay_seconds > 0:
-            signin_time = datetime.now() + timedelta(seconds=delay_seconds)
-            print(f"随机模式: 延迟 {format_time_remaining(delay_seconds)} 后签到")
-            print(f"预计签到时间: {signin_time.strftime('%H:%M:%S')}")
-            wait_with_countdown(delay_seconds)
-    
-    print("----------夸克网盘开始尝试签到----------")
+    print("----------夸克网盘开始签到----------")
     main()
-    print("----------夸克网盘签到执行完毕----------")
-    print(f"==== 夸克签到完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====")
+    print("----------夸克网盘签到完毕----------")
