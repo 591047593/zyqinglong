@@ -1,3 +1,6 @@
+# cron: 10 12 * * *
+# const $ = new Env('顺丰速运')
+
 # 变量名：sfsyUrl
 # 格式：多账号用&分割或创建多个变量sfsyUrl
 # 关于参数获取如下两种方式：
@@ -20,9 +23,29 @@ import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from urllib.parse import unquote
 
+# ==================== Bark 推送配置 ====================
+# 添加自定义参数，也可以留空
+CUSTOM_BARK_ICON = "https://gitee.com/hlt1995/BARK_ICON/raw/main/SFExpress.png"   # 自定义图标
+CUSTOM_BARK_GROUP = "顺丰速运"              # 自定义分组
+PUSH_SWITCH = "1"                #推送开关，1开启，0关闭
+# =======================================================
+
+BARK_PUSH = os.getenv("BARK_PUSH")
+BARK_ICON = CUSTOM_BARK_ICON or os.getenv("BARK_ICON", "")
+BARK_GROUP = CUSTOM_BARK_GROUP or os.getenv("BARK_GROUP", "")
+
+os.environ["BARK_ICON"] = BARK_ICON
+os.environ["BARK_GROUP"] = BARK_GROUP
+os.environ["PUSH_SWITCH"] = PUSH_SWITCH
+
 # 禁用安全请求警告
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 PROXY_API_URL = os.getenv('SF_PROXY_API_URL', '')  # 从环境变量获取代理API地址
+
+try:
+    from notify import send as notify_send
+except ImportError:
+    print("❌ 未找到notify模块，将使用普通输出")
 
 def get_proxy():
     try:
@@ -45,22 +68,27 @@ def get_proxy():
         print(f'❌ 获取代理异常: {str(e)}')
         return None
 
-send_msg = ''
-one_msg = ''
+# 全局变量用于存储推送消息
+push_messages = []
+force_push = False
 
-def Log(cont=''):
-    global send_msg, one_msg
-    print(cont)
-    if cont:
-        one_msg += f'{cont}\n'
-        send_msg += f'{cont}\n'
+def add_push_message(account_info, sign_info, point_info):
+    message = f"{account_info}\n{sign_info}\n{point_info}"
+    push_messages.append(message)
 
-inviteId = ['']
+def add_error_message(error_info):
+    global force_push
+    force_push = True
+    push_messages.append(f"❌ {error_info}")
 
 class RUN:
     def __init__(self, info, index):
-        global one_msg
-        one_msg = ''
+        self.push_data = {
+            'account': '',
+            'sign': '',
+            'points': ''
+        }
+        self.has_error = False  # 标记当前账号是否有错误
         split_info = info.split('@')
         url = split_info[0]
         len_split_info = len(split_info)
@@ -101,6 +129,8 @@ class RUN:
         self.max_level = 8
         self.packet_threshold = 1 << (self.max_level - 1)
         self.totalPoint = 0
+        self.initial_points = 0  # 初始积分
+        self.today_earned = 0    # 今日获得积分
 
     def get_deviceId(self, characters='abcdef0123456789'):
         result = ''
@@ -122,13 +152,22 @@ class RUN:
             self.mobile = self.phone[:3] + "*" * 4 + self.phone[7:] if self.phone else ''
             
             if self.phone:
-                Log(f'👤 账号{self.index}:【{self.mobile}】登陆成功')
+                print(f'👤 账号{self.index}:【{self.mobile}】登陆成功')
+                self.push_data['account'] = f'👤 账号{self.index}:【{self.mobile}】'
                 return True
             else:
-                Log(f'❌ 账号{self.index}获取用户信息失败')
+                error_msg = f'账号{self.index}获取用户信息失败'
+                print(f'❌ {error_msg}')
+                self.push_data['account'] = f'❌ 账号{self.index}'
+                add_error_message(error_msg)
+                self.has_error = True
                 return False
         except Exception as e:
-            Log(f'❌ 登录异常: {str(e)}')
+            error_msg = f'登录异常: {str(e)}'
+            print(f'❌ {error_msg}')
+            self.push_data['account'] = f'❌ 账号{self.index}'
+            add_error_message(error_msg)
+            self.has_error = True
             return False
 
     def getSign(self):
@@ -196,11 +235,19 @@ class RUN:
             count_day = response.get('obj', {}).get('countDay', 0)
             if response.get('obj') and response['obj'].get('integralTaskSignPackageVOList'):
                 packet_name = response["obj"]["integralTaskSignPackageVOList"][0]["packetName"]
-                Log(f'✨ 签到成功，获得【{packet_name}】，本周累计签到【{count_day + 1}】天')
+                sign_msg = f'✨ 签到成功，获得【{packet_name}】，本周累计签到【{count_day}】天'
+                print(sign_msg)
+                self.push_data['sign'] = f'✨ 签到成功，本周累计签到【{count_day}】天'
             else:
-                Log(f'📝 今日已签到，本周累计签到【{count_day + 1}】天')
+                sign_msg = f'📝 今日已签到，本周累计签到【{count_day}】天'
+                print(sign_msg)
+                self.push_data['sign'] = f'📝 今日已签到，本周累计签到【{count_day}】天'
         else:
-            print(f'❌ 签到失败！原因：{response.get("errorMessage")}')
+            error_msg = f'签到失败！原因：{response.get("errorMessage")}'
+            print(f'❌ {error_msg}')
+            self.push_data['sign'] = '❌ 签到失败'
+            add_error_message(error_msg)
+            self.has_error = True
 
     def superWelfare_receiveRedPacket(self):
         print(f'🎁 超值福利签到')
@@ -216,45 +263,63 @@ class RUN:
             gift_names = ', '.join([gift['giftName'] for gift in gift_list])
             receive_status = response.get('obj', {}).get('receiveStatus')
             status_message = '领取成功' if receive_status == 1 else '已领取过'
-            Log(f'🎉 超值福利签到[{status_message}]: {gift_names}')
+            print(f'🎉 超值福利签到[{status_message}]: {gift_names}')
         else:
             error_message = response.get('errorMessage') or json.dumps(response) or '无返回'
             print(f'❌ 超值福利签到失败: {error_message}')
 
     def get_SignTaskList(self, END=False):
-        if not END: print(f'🎯 开始获取签到任务列表')
-        json_data = {
-            'channelType': '1',
-            'deviceId': self.get_deviceId(),
-        }
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~queryPointTaskAndSignFromES'
-        response = self.do_request(url, data=json_data)
+        if not END: 
+            print(f'🎯 开始获取签到任务列表')
+            # 记录初始积分
+            json_data = {
+                'channelType': '1',
+                'deviceId': self.get_deviceId(),
+            }
+            url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~queryPointTaskAndSignFromES'
+            response = self.do_request(url, data=json_data)
+            if response.get('success') == True and response.get('obj') != []:
+                self.initial_points = response["obj"]["totalPoint"]
+                print(f'💰 初始积分：【{self.initial_points}】')
+        else:
+            print(f'🎯 获取最终积分')
+            json_data = {
+                'channelType': '1',
+                'deviceId': self.get_deviceId(),
+            }
+            url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~queryPointTaskAndSignFromES'
+            response = self.do_request(url, data=json_data)
+            if response.get('success') == True and response.get('obj') != []:
+                self.totalPoint = response["obj"]["totalPoint"]
+                self.today_earned = self.totalPoint - self.initial_points
+                points_msg = f'💰 当前积分：【{self.totalPoint}】'
+                if self.today_earned > 0:
+                    points_msg += f'（+{self.today_earned}）'
+                print(points_msg)
+                self.push_data['points'] = points_msg
+                return
+            
         if response.get('success') == True and response.get('obj') != []:
             self.totalPoint = response["obj"]["totalPoint"]
-            if END:
-                Log(f'💰 当前积分：【{self.totalPoint}】')
-                return
-            Log(f'💰 执行前积分：【{self.totalPoint}】')
-            for task in response["obj"]["taskTitleLevels"]:
-                self.taskId = task["taskId"]
-                self.taskCode = task["taskCode"]
-                self.strategyId = task["strategyId"]
-                self.title = task["title"]
-                status = task["status"]
-                skip_title = ['用行业模板寄件下单', '去新增一个收件偏好', '参与积分活动']
-                if status == 3:
-                    print(f'✨ {self.title}-已完成')
-                    continue
-                if self.title in skip_title:
-                    print(f'⏭️ {self.title}-跳过')
-                    continue
-                else:
-                    # print("taskId:", taskId)
-                    # print("taskCode:", taskCode)
-                    # print("----------------------")
-                    self.doTask()
-                    time.sleep(3)
-                self.receiveTask()
+            if not END:
+                print(f'💰 执行前积分：【{self.totalPoint}】')
+                for task in response["obj"]["taskTitleLevels"]:
+                    self.taskId = task["taskId"]
+                    self.taskCode = task["taskCode"]
+                    self.strategyId = task["strategyId"]
+                    self.title = task["title"]
+                    status = task["status"]
+                    skip_title = ['用行业模板寄件下单', '去新增一个收件偏好', '参与积分活动']
+                    if status == 3:
+                        print(f'✨ {self.title}-已完成')
+                        continue
+                    if self.title in skip_title:
+                        print(f'⏭️ {self.title}-跳过')
+                        continue
+                    else:
+                        self.doTask()
+                        time.sleep(3)
+                    self.receiveTask()
 
     def doTask(self):
         print(f'🎯 开始去完成【{self.title}】任务')
@@ -283,7 +348,7 @@ class RUN:
         else:
             print(f'❌ 【{self.title}】任务-{response.get("errorMessage")}')
 
-
+    # 其他方法保持不变...
     def EAR_END_2023_TaskList(self):
         print('\n🎭 开始年终集卡任务')
         json_data = {
@@ -374,7 +439,7 @@ class RUN:
                 if can_receive_invite_award:
                     self.member_day_receive_invite_award(invite_user_id)
                 self.member_day_red_packet_status()
-                Log(f'🎁 会员日可以抽奖{lottery_num}次')
+                print(f'🎁 会员日可以抽奖{lottery_num}次')
                 for _ in range(lottery_num):
                     self.member_day_lottery()
                 if self.member_day_black:
@@ -385,10 +450,10 @@ class RUN:
                 self.member_day_red_packet_status()
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log(f'📝 查询会员日失败: {error_message}')
+                print(f'📝 查询会员日失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -401,13 +466,13 @@ class RUN:
             response = self.do_request(url, payload)
             if response.get('success'):
                 product_name = response.get('obj', {}).get('productName', '空气')
-                Log(f'🎁 会员日奖励: {product_name}')
+                print(f'🎁 会员日奖励: {product_name}')
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log(f'📝 领取会员日奖励失败: {error_message}')
+                print(f'📝 领取会员日奖励失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -419,13 +484,13 @@ class RUN:
             response = self.do_request(url, payload)
             if response.get('success'):
                 product_name = response.get('obj', {}).get('productName', '空气')
-                Log(f'🎁 会员日抽奖: {product_name}')
+                print(f'🎁 会员日抽奖: {product_name}')
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log(f'📝 会员日抽奖失败: {error_message}')
+                print(f'📝 会员日抽奖失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -457,10 +522,10 @@ class RUN:
                                 self.member_day_finish_task(task)
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log('📝 查询会员日任务失败: ' + error_message)
+                print('📝 查询会员日任务失败: ' + error_message)
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -472,14 +537,14 @@ class RUN:
 
             response = self.do_request(url, payload)
             if response.get('success'):
-                Log('📝 完成会员日任务[' + task['taskName'] + ']成功')
+                print('📝 完成会员日任务[' + task['taskName'] + ']成功')
                 self.member_day_fetch_mix_task_reward(task)
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log('📝 完成会员日任务[' + task['taskName'] + ']失败: ' + error_message)
+                print('📝 完成会员日任务[' + task['taskName'] + ']失败: ' + error_message)
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -491,13 +556,13 @@ class RUN:
 
             response = self.do_request(url, payload)
             if response.get('success'):
-                Log('🎁 领取会员日任务[' + task['taskName'] + ']奖励成功')
+                print('🎁 领取会员日任务[' + task['taskName'] + ']奖励成功')
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log('📝 领取会员日任务[' + task['taskName'] + ']奖励失败: ' + error_message)
+                print('📝 领取会员日任务[' + task['taskName'] + ']奖励失败: ' + error_message)
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -514,7 +579,7 @@ class RUN:
                 print(f'📝 会员日领取{hour}点红包失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -544,21 +609,21 @@ class RUN:
                     if int_level < self.max_level:
                         remaining_needed += 1 << (int_level - 1)
 
-                Log("📝 会员日合成列表: " + ", ".join(packet_summary))
+                print("📝 会员日合成列表: " + ", ".join(packet_summary))
 
                 if self.member_day_red_packet_map.get(self.max_level):
-                    Log(f"🎁 会员日已拥有[{self.max_level}级]红包X{self.member_day_red_packet_map[self.max_level]}")
+                    print(f"🎁 会员日已拥有[{self.max_level}级]红包X{self.member_day_red_packet_map[self.max_level]}")
                     self.member_day_red_packet_draw(self.max_level)
                 else:
                     remaining = self.packet_threshold - remaining_needed
-                    Log(f"📝 会员日距离[{self.max_level}级]红包还差: [1级]红包X{remaining}")
+                    print(f"📝 会员日距离[{self.max_level}级]红包还差: [1级]红包X{remaining}")
 
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log(f'📝 查询会员日合成失败: {error_message}')
+                print(f'📝 查询会员日合成失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -571,17 +636,17 @@ class RUN:
 
             response = self.do_request(url, payload)
             if response.get('success'):
-                Log(f'🎁 会员日合成: [{level}级]红包X2 -> [{level + 1}级]红包')
+                print(f'🎁 会员日合成: [{level}级]红包X2 -> [{level + 1}级]红包')
                 self.member_day_red_packet_map[level] -= 2
                 if not self.member_day_red_packet_map.get(level + 1):
                     self.member_day_red_packet_map[level + 1] = 0
                 self.member_day_red_packet_map[level + 1] += 1
             else:
                 error_message = response.get('errorMessage', '无返回')
-                Log(f'📝 会员日合成两个[{level}级]红包失败: {error_message}')
+                print(f'📝 会员日合成两个[{level}级]红包失败: {error_message}')
                 if '没有资格参与活动' in error_message:
                     self.member_day_black = True
-                    Log('📝 会员日任务风控')
+                    print('📝 会员日任务风控')
         except Exception as e:
             print(e)
 
@@ -593,23 +658,21 @@ class RUN:
             if response and response.get('success'):
                 coupon_names = [item['couponName'] for item in response.get('obj', [])] or []
 
-                Log(f"🎁 会员日提取[{level}级]红包: {', '.join(coupon_names) or '空气'}")
+                print(f"🎁 会员日提取[{level}级]红包: {', '.join(coupon_names) or '空气'}")
             else:
                 error_message = response.get('errorMessage') if response else "无返回"
-                Log(f"📝 会员日提取[{level}级]红包失败: {error_message}")
+                print(f"📝 会员日提取[{level}级]红包失败: {error_message}")
                 if "没有资格参与活动" in error_message:
                     self.memberDay_black = True
                     print("📝 会员日任务风控")
         except Exception as e:
             print(e)
 
-
     def main(self):
-        global one_msg
         wait_time = random.randint(1000, 3000) / 1000.0  
         time.sleep(wait_time)  
-        one_msg = ''
-        if not self.login_res: return False
+        if not self.login_res: 
+            return False
 
         self.sign()
         self.superWelfare_receiveRedPacket()
@@ -622,9 +685,37 @@ class RUN:
         else:
             print('⏰ 未到指定时间不执行会员日任务\n==================================\n')
 
+        # 添加到推送消息列表
+        if self.push_data['account'] and self.push_data['sign'] and self.push_data['points']:
+            add_push_message(self.push_data['account'], self.push_data['sign'], self.push_data['points'])
+
         return True
 
+def send_notification():
+    """发送推送通知"""
+    if not push_messages:
+        print("❌ 没有可推送的消息")
+        return
+        
+    # 构建推送内容
+    title = "🚚 顺丰速运签到结果\n"
+    content = "\n\n".join(push_messages)
+    
+    print("\n" + "="*50)
+    print("推送内容:")
+    print(content)
+    print("="*50)
+    
+    try:
+        notify_send(title, content)
+        print("✅ 推送发送成功")
+    except NameError:
+        print("❌ notify模块未找到，无法发送推送")
+    except Exception as e:
+        print(f"❌ 推送发送失败: {str(e)}")
+
 def main():
+    global force_push
     ENV_NAME = 'sfsyUrl'
     local_version = '2025.10.08'
     token = os.getenv(ENV_NAME)
@@ -638,15 +729,19 @@ def main():
         return
         
     print(f"==================================")
-    print(f"🎉 呆呆粉丝后援会：996374999")
-    print(f"🚚 顺丰速运脚本 v{local_version}")
     print(f"📱 共获取到{len(tokens)}个账号")
-    print(f"😣 修改By:呆呆呆呆")
     print(f"==================================")
     
     for index, infos in enumerate(tokens):
         run_result = RUN(infos, index).main()
-        if not run_result: continue
+        if not run_result: 
+            continue
+
+    # 发送推送
+    if force_push or PUSH_SWITCH == '1':
+        send_notification()
+    else:
+        print("✅ 推送开关已关闭，所有账号CK有效，不发送推送通知")    
 
 if __name__ == '__main__':
     main()
