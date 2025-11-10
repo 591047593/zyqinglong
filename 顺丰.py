@@ -23,8 +23,8 @@ import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from urllib.parse import unquote
 
-# ==================== Bark 推送配置 ====================
-# 添加自定义参数，也可以留空
+# ==================== 推送配置 ====================
+# 依赖青龙自带的notify.py，无需额外配置BARK（如需单独配置可保留）
 CUSTOM_BARK_ICON = "https://gitee.com/hlt1995/BARK_ICON/raw/main/SFExpress.png"   # 自定义图标
 CUSTOM_BARK_GROUP = "顺丰速运"              # 自定义分组
 PUSH_SWITCH = "1"                #推送开关，1开启，0关闭
@@ -42,10 +42,13 @@ os.environ["PUSH_SWITCH"] = PUSH_SWITCH
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 PROXY_API_URL = os.getenv('SF_PROXY_API_URL', '')  # 从环境变量获取代理API地址
 
+# 导入青龙自带的notify模块
 try:
     from notify import send as notify_send
+    print("✅ 成功加载青龙notify推送模块")
 except ImportError:
-    print("❌ 未找到notify模块，将使用普通输出")
+    print("❌ 未找到notify模块，无法发送推送")
+    notify_send = None  # 避免后续调用报错
 
 def get_proxy():
     try:
@@ -71,6 +74,7 @@ def get_proxy():
 # 全局变量用于存储推送消息
 push_messages = []
 force_push = False
+inviteId = []  # 修复未定义的问题，避免会员日任务报错
 
 def add_push_message(account_info, sign_info, point_info):
     message = f"{account_info}\n{sign_info}\n{point_info}"
@@ -154,6 +158,10 @@ class RUN:
             if self.phone:
                 print(f'👤 账号{self.index}:【{self.mobile}】登陆成功')
                 self.push_data['account'] = f'👤 账号{self.index}:【{self.mobile}】'
+                # 补充inviteId列表，避免后续会员日任务报错
+                global inviteId
+                if self.user_id not in inviteId:
+                    inviteId.append(self.user_id)
                 return True
             else:
                 error_msg = f'账号{self.index}获取用户信息失败'
@@ -348,7 +356,6 @@ class RUN:
         else:
             print(f'❌ 【{self.title}】任务-{response.get("errorMessage")}')
 
-    # 其他方法保持不变...
     def EAR_END_2023_TaskList(self):
         print('\n🎭 开始年终集卡任务')
         json_data = {
@@ -428,7 +435,12 @@ class RUN:
     def member_day_index(self):
         print('🎭 会员日活动')
         try:
-            invite_user_id = random.choice([invite for invite in inviteId if invite != self.user_id])
+            # 修复inviteId为空的问题
+            if len(inviteId) < 2 and self.user_id:
+                invite_user_id = self.user_id  # 若无其他用户ID，用自身ID避免报错
+            else:
+                invite_user_id = random.choice([invite for invite in inviteId if invite != self.user_id])
+            
             payload = {'inviteUserId': invite_user_id}
             url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~memberDayIndexService~index'
 
@@ -455,7 +467,7 @@ class RUN:
                     self.member_day_black = True
                     print('📝 会员日任务风控')
         except Exception as e:
-            print(e)
+            print(f'会员日任务异常: {e}')
 
     def member_day_receive_invite_award(self, invite_user_id):
         try:
@@ -629,8 +641,6 @@ class RUN:
 
     def member_day_red_packet_merge(self, level):
         try:
-            # for key,level in enumerate(self.member_day_red_packet_map):
-            #     pass
             payload = {'level': level, 'num': 2}
             url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~memberDayPacketService~redPacketMerge'
 
@@ -692,13 +702,13 @@ class RUN:
         return True
 
 def send_notification():
-    """发送推送通知"""
+    """发送推送通知（依赖青龙notify模块）"""
     if not push_messages:
         print("❌ 没有可推送的消息")
         return
         
     # 构建推送内容
-    title = "🚚 顺丰速运签到结果\n"
+    title = "🚚 顺丰速运签到结果"
     content = "\n\n".join(push_messages)
     
     print("\n" + "="*50)
@@ -706,13 +716,15 @@ def send_notification():
     print(content)
     print("="*50)
     
-    try:
-        notify_send(title, content)
-        print("✅ 推送发送成功")
-    except NameError:
-        print("❌ notify模块未找到，无法发送推送")
-    except Exception as e:
-        print(f"❌ 推送发送失败: {str(e)}")
+    # 调用青龙自带的notify推送
+    if notify_send:
+        try:
+            notify_send(title, content)
+            print("✅ 青龙推送发送成功")
+        except Exception as e:
+            print(f"❌ 青龙推送发送失败: {str(e)}")
+    else:
+        print("❌ notify模块不可用，无法发送推送")
 
 def main():
     global force_push
@@ -737,11 +749,11 @@ def main():
         if not run_result: 
             continue
 
-    # 发送推送
-    if force_push or PUSH_SWITCH == '1':
+    # 发送推送（有错误强制推送，否则按开关控制）
+    if force_push or (PUSH_SWITCH == '1' and push_messages):
         send_notification()
     else:
-        print("✅ 推送开关已关闭，所有账号CK有效，不发送推送通知")    
+        print("✅ 推送开关已关闭或无有效消息，不发送推送")    
 
 if __name__ == '__main__':
     main()
